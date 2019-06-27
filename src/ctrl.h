@@ -1,5 +1,5 @@
-#ifndef __MAIN_H__
-#define __MAIN_H__
+#ifndef __CTRL_H__
+#define __CTRL_H__
 
 
 // AVR basics
@@ -42,7 +42,7 @@
 #define PWM_OUT_FAN     PIN5_bm
 
 // PWM controls
-#define PWM_PRESCALE    TC45_CLKSEL_DIV8_gc
+#define PWM_PRESCALE    TC_CLKSEL_DIV8_gc
 //                      ((F_CPU / 8 / 25000)-1) = 159 (0-159 = 160)
 #define PWM_PERIOD      159
 

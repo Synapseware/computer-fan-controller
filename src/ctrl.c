@@ -1,4 +1,4 @@
-#include "main.h"
+#include "ctrl.h"
 
 
 // Globals
@@ -110,13 +110,13 @@ void ConfigureTachometer(void)
     // Configure TCC5 for event counting...
 
     // Configure for Input Capture for external control via an event channel
-    TCC5.CTRLD = TC45_EVACT_UPDOWN_gc | TC45_EVSEL_CH0_gc;
+    TCC5.CTRLD = TC_EVACT_UPDOWN_gc | TC_EVSEL_CH0_gc;
 
     // Enable input capture
-    TCC5.CTRLE = TC45_CCAMODE_CAPT_gc;
+    TCC5.CTRLE = TC_CCAMODE_CAPT_gc;
 
     // Clock from event channel 0
-    TCC5.CTRLA = TC45_CLKSEL_EVCH0_gc;
+    TCC5.CTRLA = TC_CLKSEL_EVCH0_gc;
 }
 
 // ----------------------------------------------------------------------------
@@ -131,13 +131,13 @@ void ConfigurePWM(void)
     TCD5.CTRLA = 0;
 
     // Single-slope PWM
-    TCD5.CTRLB = TC45_WGMODE_SINGLESLOPE_gc;
+    TCD5.CTRLB = TC_WGMODE_SINGLESLOPE_gc;
 
     TCD5.CTRLC = 0;
     TCD5.CTRLD = 0;
 
     // Enable capture/compare mode output
-    TCD5.CTRLE = TC45_CCAMODE_COMP_gc;
+    TCD5.CTRLE = TC_CCAMODE_COMP_gc;
 
     TCD5.CTRLA = PWM_PRESCALE;
     TCD5.PER = PWM_PERIOD;
@@ -158,12 +158,12 @@ void ConfigureMonitor(void)
     // a control loop.
     // Configure the prescaler (32MHz / 1024 / 31250 = 1) and set the
     // compare A value to 1 for 1 second interrupts
-    TCC4.CTRLA = TC45_CLKSEL_DIV1024_gc;
+    TCC4.CTRLA = TC_CLKSEL_DIV1024_gc;
     TCC4.PER = 31250-1;
     TCC4.CCA = 1;
 
     // Normal mode, 16 bit
-    TCC4.CTRLB = 0;
+    TCC4.CTRLB = TC_BYTEM_NORMAL_gc | TC_WGMODE_NORMAL_gc;
 
     // Normal
     TCC4.CTRLC = 0;
@@ -176,7 +176,7 @@ void ConfigureMonitor(void)
 
     // Enable high priority interrupt on CCA
     TCC4.INTCTRLA = 0;
-    TCC4.INTCTRLB = TC45_CCAINTLVL_HI_gc;
+    TCC4.INTCTRLB = TC_CCAINTLVL_HI_gc;
 }
 
 // ----------------------------------------------------------------------------

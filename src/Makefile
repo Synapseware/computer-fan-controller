@@ -78,7 +78,7 @@ FORMAT = ihex
 
 
 # Target file name (without extension).
-TARGET = main
+TARGET = ctrl
 
 
 # Object files directory
@@ -134,7 +134,7 @@ PACK_INC = $(PACK_DIR)/include
 #	Use forward slashes for directory separators.
 #	For a directory that has spaces, enclose it in quotes.
 EXTRAINCDIRS = $(LIBS_DIR) \
-			   $(PACK_INC)
+			$(PACK_INC)
 
 
 # XMega devices need the -e parameter for full-chip erase.  Otherwise,
