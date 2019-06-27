@@ -2,15 +2,9 @@
 
 
 // Globals
-volatile uint16_t   _fanSpeed       = 0;
-volatile uint16_t   _fanCurrent     = 0;
 volatile uint16_t   _fanRawCurrent  = 0;
-volatile uint16_t   _fanVoltage     = 0;
 volatile uint16_t   _fanRawVoltage  = 0;
-volatile uint16_t   _tempValue      = 0;
 volatile uint16_t   _tempRawValue   = 0;
-volatile uint8_t    _controlScheme  = SCHEME_NONE;
-volatile uint8_t    _monitorMode    = MONITOR_NONE;
 volatile uint8_t    _monitorTick    = 0;
 volatile uint8_t    _discardADC     = 1;
 
@@ -48,14 +42,15 @@ void ConfigureADC(void)
 
     // See "Alternate Pin Functions" in the datasheet around page 59
 
-    PORTA.DIRCLR = PIN1_bm | PIN2_bm;
+    PORTA.DIRCLR = PIN1_bm | PIN2_bm | PIN3_bm;
 
     // disable the ADC
     ADCA.CTRLA = 0;
 
     // Configure for Freerunning, 12-bit
     ADCA.CTRLB = ADC_CURRLIMIT_NO_gc |
-                 ADC_RESOLUTION_12BIT_gc;
+                 ADC_RESOLUTION_12BIT_gc |
+                 ADC_FREERUN_bm;
 
     // Configure with external Vref @ PORT A0
     ADCA.REFCTRL = ADC_REFSEL_AREFA_gc;
@@ -71,9 +66,9 @@ void ConfigureADC(void)
                     ADC_CH_INPUTMODE_SINGLEENDED_gc;
 
     // Select the ADC channel
-    ADCA.CH0.MUXCTRL = ADC_CH_CURRENT;
+    ADCA.CH0.MUXCTRL = ADC_CH_TEMP;
 
-    // No interrupts (for now)
+    // Enable interrupts on completed conversions
     ADCA.CH0.INTCTRL = ADC_CH_INTMODE_COMPLETE_gc |
                        ADC_CH_INTLVL_LO_gc;
 
@@ -137,7 +132,7 @@ void ConfigurePWM(void)
     TCD5.CTRLD = 0;
 
     // Enable capture/compare mode output
-    TCD5.CTRLE = TC_CCAMODE_COMP_gc;
+    TCD5.CTRLE = TC_CCAMODE_COMP_gc | TC_CCBMODE_COMP_gc;
 
     TCD5.CTRLA = PWM_PRESCALE;
     TCD5.PER = PWM_PERIOD;
@@ -291,7 +286,14 @@ float getVoltage(void)
 // Completes a fan monitoring pass, including 
 void ProcessMonitor(void)
 {
+    static uint8_t    _controlScheme  = SCHEME_NONE;
+    static uint8_t    _monitorMode    = MONITOR_NONE;
+
     // Implement awesome fan control sheme state engine here!  Yeeeah!
+    // For now, just output the ADC reading for one of the input pins:    
+    ControlPWM(SCHEME_PWM);
+    TCD5.CCA = _fanRawVoltage;
+    TCD5.CCB = _fanRawCurrent;
 }
 
 // ----------------------------------------------------------------------------
@@ -345,7 +347,7 @@ ISR(ADCA_CH0_vect)
 }
 
 // ----------------------------------------------------------------------------
-// Timer1 Compare A interrupt handler
+// Monitor timer interrupt handler
 ISR(TCC4_CCA_vect)
 {
     // Flag a monitoring cycle

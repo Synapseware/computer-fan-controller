@@ -38,12 +38,26 @@ The controller employs a monitoring scheme that can detect when a fan is disconn
 # Hardware Modules
 
 ## ADC
-2 channels are needed on the ADC, one for reading the fan voltage, and one for reading the fan current draw.
+3 channels are needed on the ADC, one for reading the fan voltage, and one for reading the fan current draw.
 
 ## Timers
 3 timers are needed for the various PWM and monitoring loops.
 
-- Timer0, an 8 bit timer, is used to generate a 25kHz PWM signal for the DC-DC converter, and also for the PWM output for 4-pin PWM control mode
-- Timer1, a 16 bit timer, is used to monitor the tachometer signal for 1 second cycles
-- Timer2, an 8 bit timer, is used to drive the system monitoring event loop
+- TCD5 is used to generate a 25kHz PWM signal for the DC-DC converter, and for the PWM output for 4-pin PWM control mode
+- TCC5 is used to monitor the tachometer signal and count rotation events
+- TCC4 is used to drive the system monitoring event loop
 
+# Hardware I/O
+## ADC
+The ADC resides on Port A:
+
+- PA0 - Aref input - should be tied to the mcu's supply rail and decoupled
+- PA1 - Current sensor
+- PA2 - Voltage sensor
+- PA3 - Temperature sensor
+
+## PWM Timer
+The timer/counter TCD5, resides on Port D:
+
+- PD4 - PWM output for CCA register
+- PD5 - PWM output for CCB register
