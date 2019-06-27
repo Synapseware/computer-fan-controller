@@ -1,224 +1,297 @@
 #include "main.h"
-#include "adc.h"
 
 
 // Globals
 volatile uint16_t   _fanSpeed       = 0;
-volatile uint8_t    _fanCurrent     = 0;
-volatile uint8_t    _fanRawCurrent  = 0;
-volatile uint8_t    _fanVoltage     = 0;
-volatile uint8_t    _fanRawVoltage  = 0;
+volatile uint16_t   _fanCurrent     = 0;
+volatile uint16_t   _fanRawCurrent  = 0;
+volatile uint16_t   _fanVoltage     = 0;
+volatile uint16_t   _fanRawVoltage  = 0;
+volatile uint16_t   _tempValue      = 0;
+volatile uint16_t   _tempRawValue   = 0;
 volatile uint8_t    _controlScheme  = SCHEME_NONE;
 volatile uint8_t    _monitorMode    = MONITOR_NONE;
 volatile uint8_t    _monitorTick    = 0;
 volatile uint8_t    _discardADC     = 1;
 
 
-// ----------------------------------------------------------------------------
-// Initializes the ADC to read the temperature sensor and
-// the current sensor used to detect fan stall
-void initSensors()
+// -----------------------------------------------------------------------------
+// Configures the MCU flags
+void ConfigureCore(void)
 {
-    // The ADC is 10-bit (0-1023).  The reference voltage will be set
-    // to , and the raw ADC transfer function is:
-    //        Vin * 1024
-    // ADC = ------------
-    //          Vref
-    // Vref = 5.0
+	// Start the PLL and configure for 32MHz CPU clock
+	XMEGACLK_StartPLL(CLOCK_SRC_INT_RC2MHZ, 2000000, F_CPU);
 
-    ADMUX   =   (0<<REFS1)  |   // Use internal supply, Vref disconnected
-                (0<<REFS0)  |   // 
-                (0<<ADLAR)  |   // Right-adjust result
-                (0<<MUX3)   |   // Start on channel 0
-                (0<<MUX2)   |   // 
-                (0<<MUX1)   |   // 
-                (0<<MUX0);      // 
+	// set the main clock source to the PLL
+	XMEGACLK_SetCPUClockSource(CLOCK_SRC_PLL);
 
-    ADCSRA  =   (1<<ADEN)   |   // Bit 7 – ADEN: ADC Enable
-                (1<<ADSC)   |   // Bit 6 – ADSC: ADC Start Conversion
-                (1<<ADATE)  |   // Bit 5 – ADATE: ADC Auto Trigger Enable
-                (0<<ADIF)   |   // Bit 4 – ADIF: ADC Interrupt Flag
-                (1<<ADIE)   |   // Bit 3 – ADIE: ADC Interrupt Enable
-                (1<<ADPS2)  |   // ADC prescaler of 64 (8MHz/64=125kHz)
-                (1<<ADPS1)  |   // 
-                (0<<ADPS0);     // 
+	// Enable lov, med and high level interrupts in the PMIC
+	PMIC.CTRL = PMIC_LOLVLEN_bm | PMIC_MEDLVLEN_bm | PMIC_HILVLEN_bm;
+}
 
-    ADCSRB  =   (0<<ACME)   |   // 
-                (0<<ADTS2)  |   // 
-                (0<<ADTS1)  |   // 
-                (0<<ADTS0);     // 
 
-    DIDR0   =   (0<<ADC5D)  |   // 
-                (0<<ADC4D)  |   // 
-                (0<<ADC3D)  |   // 
-                (0<<ADC2D)  |   // 
-                (0<<ADC1D)  |   // 
-                (0<<ADC0D);     // 
+// ----------------------------------------------------------------------------
+// Initializes the ADC to read on 2 channels
+void ConfigureADC(void)
+{
+    // The ADC is used to sample the DC-DC voltage, and the voltage across
+    // the current sense resistor for the fan.
+    // Pin A1 is for voltage
+    // Pin A2 is for current
 
-    DDRC    =   (DDRC & 0xFC);  // Mask out the ADC0 and ADC1
+    // get the ADCA calibration data from the NVM controller
+    NVM.CMD = NVM_CMD_READ_CALIB_ROW_gc;
+    XMEGACLK_CCP_Write(&NVM.CTRLA, NVM_CMDEX_bm);
+    ADCA.CAL = pgm_read_word(PRODSIGNATURES_ADCACAL0);
+    //ADCA.CALH = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL1));
+    NVM.CMD = 0;
+
+    // See "Alternate Pin Functions" in the datasheet around page 59
+
+    PORTA.DIRCLR = PIN1_bm | PIN2_bm;
+
+    // disable the ADC
+    ADCA.CTRLA = 0;
+
+    // Configure for Freerunning, 12-bit
+    ADCA.CTRLB = ADC_CURRLIMIT_NO_gc |
+                 ADC_RESOLUTION_12BIT_gc;
+
+    // Configure with external Vref @ PORT A0
+    ADCA.REFCTRL = ADC_REFSEL_AREFA_gc;
+
+    // Don't use events
+    ADCA.EVCTRL = 0;
+
+    // Configure prescaler
+    ADCA.PRESCALER = ADC_PRESCALER_DIV512_gc;
+
+    // Configure ADC for 1x gain and single-ended input
+    ADCA.CH0.CTRL = ADC_CH_GAIN_1X_gc |
+                    ADC_CH_INPUTMODE_SINGLEENDED_gc;
+
+    // Select the ADC channel
+    ADCA.CH0.MUXCTRL = ADC_CH_CURRENT;
+
+    // No interrupts (for now)
+    ADCA.CH0.INTCTRL = ADC_CH_INTMODE_COMPLETE_gc |
+                       ADC_CH_INTLVL_LO_gc;
+
+    // Enable and start the ADC
+    ADCA.CTRLA = ADC_START_bm | ADC_ENABLE_bm;
 }
 
 // ----------------------------------------------------------------------------
-// Initializes the tachometer monitor, which requires a timer.  Timer1 is
+// Initializes the tachometer monitor, which requires a timer.  TCC5 is
 // used to count RPS from the fan.
-void initTachometer()
+void ConfigureTachometer(void)
 {
-    TCCR1A  =   (0<<COM1A1) |
-                (0<<COM1A0) |
-                (0<<COM1B1) |
-                (0<<COM1B0) |
-                (0<<WGM11)  |
-                (0<<WGM10);
+	// Initialize a timer to count fan rotation signals for a second.
+	// Fans that have a speed sensor need to have the rotation signal
+	// divided by 2, since there are 2 pulses per rotation
+    // There are 3 timers:
+    //  TCC4, TCC5, TCD5
+    // We'll use TCC5 to capture the tachometer signal
 
-    TCCR1B  =   (0<<ICNC1)  |
-                (0<<ICES1)  |
-                (0<<WGM13)  |
-                (0<<WGM12)  |
-                (0<<CS12)   |
-                (0<<CS11)   |
-                (0<<CS10);
+    // Need to configure TCC5 to count external events, then watch TCC5 for a
+    // set/known period of time to get an estimate of the fan's RPM
 
-    TCCR1C  =   (0<<FOC1A)  |
-                (0<<FOC1B);
+    // Setup event system to trigger on edge change for pin C5
+    // Capture on pin PC5
+    PORTC.DIRCLR = PIN5_bm;
+    PORTC.PIN5CTRL = PORT_ISC_RISING_gc | PORT_OPC_PULLUP_gc;
+    EVSYS.CH5MUX = EVSYS_CHMUX_PORTC_PIN5_gc;
 
+    // Reset timer
+    TCC5.CTRLA = 0;
+    TCC5.CTRLB = 0;
+    TCC5.CTRLC = 0;
 
-    TIMSK1  =   (0<<ICIE1)  |
-                (0<<OCIE1B) |
-                (0<<OCIE1A) |
-                (0<<TOIE1);
+    // Configure TCC5 for event counting...
 
-    OCR1A   =   0xffff;
-    OCR1B   =   0xffff;
+    // Configure for Input Capture for external control via an event channel
+    TCC5.CTRLD = TC45_EVACT_UPDOWN_gc | TC45_EVSEL_CH0_gc;
+
+    // Enable input capture
+    TCC5.CTRLE = TC45_CCAMODE_CAPT_gc;
+
+    // Clock from event channel 0
+    TCC5.CTRLA = TC45_CLKSEL_EVCH0_gc;
 }
 
 // ----------------------------------------------------------------------------
-// Initializes the 2 PWM control signals, which are driven by Timer0
-void initPWM()
+// Initializes the 2 PWM control signals, which are driven by TCD5
+void ConfigurePWM(void)
 {
-    TCCR0A  =   (0<<COM0A1) |
-                (0<<COM0A0) |
-                (0<<COM0B1) |
-                (0<<COM0B0) |
-                (0<<WGM01)  |
-                (0<<WGM00);
+	// Initialize a PWM timer for 25kHz and output on different ports.
+	// One PWM port will be used to control the DC-DC convert, while
+	// the other is used to control a 4-pin PWM fan
 
-    TCCR0B  =   (0<<FOC0A)  |
-                (0<<FOC0B)  |
-                (0<<WGM02)  |
-                (0<<CS02)   |
-                (0<<CS01)   |
-                (0<<CS00);
+    // Disable the timer
+    TCD5.CTRLA = 0;
 
-    TIMSK0  =   (0<<OCIE0B) |
-                (0<<OCIE0A) |
-                (0<<TOIE0);
+    // Single-slope PWM
+    TCD5.CTRLB = TC45_WGMODE_SINGLESLOPE_gc;
 
-    OCR0A   =   0xFF;
-    OCR0B   =   0xFF;    
+    TCD5.CTRLC = 0;
+    TCD5.CTRLD = 0;
+
+    // Enable capture/compare mode output
+    TCD5.CTRLE = TC45_CCAMODE_COMP_gc;
+
+    TCD5.CTRLA = PWM_PRESCALE;
+    TCD5.PER = PWM_PERIOD;
+
+    // Set the control scheme to none.
+    ControlPWM(SCHEME_NONE);
 }
 
 // ----------------------------------------------------------------------------
-// Initializes the hardware monitor, which uses Timer2.  Timer2 ISR
+// Initializes the hardware monitor, which uses Timer2.  TCC4 ISR
 // is handled in assembly for low overhead
-void initMonitor()
+void ConfigureMonitor(void)
 {
-    // Timer2 is setup to prescale by 8MHz / 256 / 250 / 125 for 1
+    // TCxx is setup to prescale by ....
     // second event loops.
     // The ISR is handled by assembly language for minimum overhead.  The ISR
     // toggles a global variable, _monitorTick, which when set to 1 initiates
     // a control loop.
+    // Configure the prescaler (32MHz / 1024 / 31250 = 1) and set the
+    // compare A value to 1 for 1 second interrupts
+    TCC4.CTRLA = TC45_CLKSEL_DIV1024_gc;
+    TCC4.PER = 31250-1;
+    TCC4.CCA = 1;
 
-    TCCR2A  =   (0<<COM2A1) |   // Disconnect OC0A
-                (0<<COM2A0) |   // 
-                (0<<COM2B1) |   // Disconnect OC0B
-                (0<<COM2B0) |   // 
-                (0<<WGM21)  |   // CTC 010
-                (1<<WGM20);     // CTC 010
+    // Normal mode, 16 bit
+    TCC4.CTRLB = 0;
 
-    TCCR2B  =   (0<<FOC2A)  |   // No force
-                (0<<FOC2B)  |   // 
-                (0<<WGM22)  |   // CTC 010
-                (1<<CS22)   |   // CLK/256
-                (1<<CS21)   |   // 
-                (0<<CS20);      // 
+    // Normal
+    TCC4.CTRLC = 0;
 
-    TIMSK2  =   (0<<OCIE2B) |   // 
-                (1<<OCIE2A) |   // Enable ISR on compare A
-                (0<<TOIE2);     // 
+    // No event system connections
+    TCC4.CTRLD = 0;
 
-    OCR2A   =   250;            // 8MHz / 256 / 250 = 125 Hz
-    OCR2B   =   0xFF;
+    // No compare/capture
+    TCC4.CTRLE = 0;
+
+    // Enable high priority interrupt on CCA
+    TCC4.INTCTRLA = 0;
+    TCC4.INTCTRLB = TC45_CCAINTLVL_HI_gc;
 }
 
 // ----------------------------------------------------------------------------
 // initialize all the hardware on the system
-void init()
+void init(void)
 {
-    initSensors();
+	// configure CPU core
+	ConfigureCore();
 
-    initTachometer();
+    // configures the ADC module
+    ConfigureADC();
 
-    initPWM();
+    // Configure tachometer capturing timer
+    ConfigureTachometer();
 
-    initMonitor();
+    // Initialize PWM drivers
+    ConfigurePWM();
+
+	// Initialize fan monitoring
+    ConfigureMonitor();
 }
 
 // ----------------------------------------------------------------------------
 // Sets the DC-DC PWM control signal
-void controlPWM(uint8_t mode)
+void ControlPWM(uint8_t mode)
 {
-
+	// There are 2 control schemes for the PWM signal:
+	switch (mode)
+	{
+		case SCHEME_NONE:
+			// Disable all PWM output pins (high-z)
+            PORTD.DIRCLR = PWM_OUT_VOLT | PWM_OUT_FAN;
+            TCD5.CCA = 0;
+            TCD5.CCB = 0;
+			break;
+		case SCHEME_PWM:
+            // 4-pin PWM control:
+            // Max DC-DC voltage
+            // PWM output
+            // Start fan PWM signal at 50%
+            PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_FAN;
+            TCD5.CCA = PWM_PERIOD;
+            TCD5.CCB = PWM_PERIOD >> 2;
+            break;
+		case SCHEME_CURR:
+        case SCHEME_VOLT:
+            // Current and voltage have the same PWM control scheme:
+            // Voltage PWM is used to control fan speed, while
+            // fan PWM output is disabled (high-Z)
+            PORTD.DIRSET = PWM_OUT_VOLT;
+            PORTD.DIRCLR = PWM_OUT_FAN;
+            TCD5.CCA = PWM_PERIOD;
+            TCD5.CCB = 0;
+			break;
+    }
 }
 
 // ----------------------------------------------------------------------------
 // Returns the fan current in amps
-float getCurrent()
+float getCurrent(void)
 {
+    // The max voltage from the resistor divider for the DC-DC power supply
+    // is chosen to be close to 3.3v, which is the ADC's reference voltage.
+    // That's why the getVoltage() and getCurrent() functions have similar
+    // values for the ADC factors.
     // The transfer function from the OpAmp output is:
     // Vin/Rin = (Vout-Vin)/Rf ... or ...
     // Av = 1 + (Rf/Rin)
-    // Which in this case, is 18.447
+    // At 0.255V, the load resistor is at maximum power load.  At Pmax,
+    // the current is as follows:
     // Imax = sqrt(P/R) = sqrt(0.5/.13) ~= 1.96
     // Vmax = sqrt(P/R)(R) = sqrt(0.5/.13)(.13) ~= 255mV
-    // Vout = (Vmax)(Av) = (0.255)(18.447) ~= 4.704
-    // ADC = (Vin)(1024)/Vref => (4.704)(1024)/5.0 ~= 963
-    // ADC factor = 963/1.96 ~= 491
+    // Vout = (Vmax)(Av) = (0.255)(12.4) ~= 3.161
+    // ADC = (Vin)(4096)/Vref => (3.161)(4096)/3.3 ~= 3923
+    // ADC factor = 3923/1.96 ~= 2001.5
     // ADC xfer function:
-    //  Ifan = ADC / 491.3
-    //       = 963 / 491.3
+    //       = 3923 / 2001.5
     //       = 1.96
-    // ADC = (Ifan)(491)
-    // Ifan = ADC/491 in amps
-    // Result = Ifan * 100
-    // So, at Imax, return value would be:
-    // ADC/491*100 = 196
-    // To get better integer math, just do:
-    // ADC * 100 / 491
-    // 963 * 100 / 491 = 196 (integer result)
-
+ 
     // Map the ADC sample to the fans' current
-    return (float) _fanRawCurrent / 491.0;
+    return (float) _fanRawCurrent / 2001.5;
 }
 
 // ----------------------------------------------------------------------------
 // Returns the fan voltage in volts
-float getVoltage()
+float getVoltage(void)
 {
-    // the voltage transfer function is:
+    // The max voltage from the resistor divider for the DC-DC power supply
+    // is chosen to be close to 3.3v, which is the ADC's reference voltage.
+    // That's why the getVoltage() and getCurrent() functions have similar
+    // values for the ADC factors.
+    // The voltage transfer function is:
     // Vout = Vin(R2/(R1+R2))
-    // Vout = (12)(5.6k)/(10k+5.6k)
-    //      = 4.307
-    // ADC  = (Vin)(1024)(Vref)
-    //      = (4.307)(1024)/(5.0)
-    //      = 882
-    // ADC factor = 882/4.307 ~= 205
+    //      R1 = 9.1k
+    //      R2 = 3.3k
+    // Vout = (12)((3.3k)/(3.3k+9.1k))
+    //      = 3.194
+    // ADC  = (Vin)(4096)(Vref)
+    //      = (3.194)(4096)/(3.3)
+    //      = 3964
+    // ADC factor = 3964/3.194 ~= 1241
     // Resistor divider factor = Vin/Vout
-    //      = 12/4.307
-    //      = 2.786
-    // Vout = ADC/ADCf*12/4.307
+    //      = 12/3.194
+    //      = 3.757
+    // Vout = ADC/ADCf*12/3.194
 
     // Map the ADC sample to the fans' voltage
-    return (float) _fanRawVoltage / 205.0 * 2.768;
+    return (float) _fanRawVoltage / 1241.0 * 3.757;
+}
+
+// ----------------------------------------------------------------------------
+// Completes a fan monitoring pass, including 
+void ProcessMonitor(void)
+{
+    // Implement awesome fan control sheme state engine here!  Yeeeah!
 }
 
 // ----------------------------------------------------------------------------
@@ -232,7 +305,10 @@ int main(void)
         if (!_monitorTick)
             continue;
 
+        _monitorTick = 0;
 
+        // do-monitoring
+        ProcessMonitor();
     }
 }
 
@@ -240,7 +316,7 @@ int main(void)
 // ADC sample complete interrupt handler
 // Automatically switches the ADC channel
 // after sampling, and discards bad results
-ISR(ADC_vect)
+ISR(ADCA_CH0_vect)
 {
     if (_discardADC)
     {
@@ -248,24 +324,33 @@ ISR(ADC_vect)
         return;
     }
 
-    switch (ADMUX)
+    switch (ADCA.CH0.MUXCTRL)
     {
-        case ADC_CURRENT:
-            _fanRawCurrent = ADC;
+        case ADC_CH_CURRENT:
+            _fanRawCurrent = ADCA.CH0.RES;
             _discardADC = 1;
-            ConfigureADCChannel(ADC_VOLTAGE);
+            ADCA.CH0.MUXCTRL = ADC_CH_VOLTAGE;
             break;
-        case ADC_VOLTAGE:
-            _fanRawVoltage = ADC;
+        case ADC_CH_VOLTAGE:
+            _fanRawVoltage = ADCA.CH0.RES;
             _discardADC = 1;
-            ConfigureADCChannel(ADC_CURRENT);
+            ADCA.CH0.MUXCTRL = ADC_CH_TEMP;
+            break;
+        case ADC_CH_TEMP:
+            _tempRawValue = ADCA.CH0.RES;
+            _discardADC = 1;
+            ADCA.CH0.MUXCTRL = ADC_CH_CURRENT;
             break;
     }
 }
 
 // ----------------------------------------------------------------------------
 // Timer1 Compare A interrupt handler
-ISR(TIMER1_COMPA_vect)
+ISR(TCC4_CCA_vect)
 {
+    // Flag a monitoring cycle
+    _monitorTick = 1;
 
+    // clear the interrupt flag when done
+    TCC4.INTFLAGS = TC4_CCAIF_bm;
 }
