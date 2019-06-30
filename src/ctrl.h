@@ -46,17 +46,18 @@
 //                      ((F_CPU / 8 / 25000)-1) = 159 (0-159 = 160)
 #define PWM_PERIOD      159
 
-// Control schemes
+// Control schemes for PWM output states
 #define SCHEME_NONE     0
 #define SCHEME_PWM      1
 #define SCHEME_CURR     2
 #define SCHEME_VOLT     3
 
 // Monitoring modes
-#define MONITOR_NONE    0
-#define MONITOR_AMPS    1
-#define MONITOR_VOLTS   2
-#define MONITOR_ERROR   255
+#define MONITOR_NONE        0
+#define MONITOR_STARTUP     1
+//#define MONITOR_AMPS    
+//#define MONITOR_VOLTS   2
+//#define MONITOR_ERROR   255
 
 
 
@@ -72,6 +73,8 @@ void ConfigureMonitor(void);
 void ControlPWM(uint8_t mode);
 float getCurrent(void);
 float getVoltage(void);
+float getTemperature(void);
+uint16_t getTachometer(void);
 void ProcessMonitor(void);
 
 #endif

@@ -4,7 +4,7 @@
 // Globals
 volatile uint16_t   _fanRawCurrent  = 0;
 volatile uint16_t   _fanRawVoltage  = 0;
-volatile uint16_t   _tempRawValue   = 0;
+volatile uint16_t   _tmpRawValue    = 0;
 volatile uint8_t    _monitorTick    = 0;
 volatile uint8_t    _discardADC     = 1;
 
@@ -142,10 +142,10 @@ void ConfigurePWM(void)
 }
 
 // ----------------------------------------------------------------------------
-// Initializes the hardware monitor, which uses Timer2.  TCC4 ISR
-// is handled in assembly for low overhead
+// Initializes the hardware monitor, which uses the RTC
 void ConfigureMonitor(void)
 {
+    /*
     // TCxx is setup to prescale by ....
     // second event loops.
     // The ISR is handled by assembly language for minimum overhead.  The ISR
@@ -172,6 +172,15 @@ void ConfigureMonitor(void)
     // Enable high priority interrupt on CCA
     TCC4.INTCTRLA = 0;
     TCC4.INTCTRLB = TC_CCAINTLVL_HI_gc;
+    */
+	
+	// RTC for monitor
+	// 1.024kHz RTC clock scaled from 32.768kHz RC osc.
+	// 32768 / 1024 = 32
+	CLK.RTCCTRL = CLK_RTCSRC_RCOSC_gc;
+	RTC.PER = (32768/1024/32);
+	RTC.INTCTRL = RTC_OVFINTLVL_HI_gc;
+	RTC.CTRL = RTC_OVF_vect;
 }
 
 // ----------------------------------------------------------------------------
@@ -195,10 +204,11 @@ void init(void)
 }
 
 // ----------------------------------------------------------------------------
-// Sets the DC-DC PWM control signal
+// Sets the initial control states
 void ControlPWM(uint8_t mode)
 {
-	// There are 2 control schemes for the PWM signal:
+	// CCA is connected to the voltage converter
+	// CCB is connected to the PWM output for 4-pin mode
 	switch (mode)
 	{
 		case SCHEME_NONE:
@@ -214,7 +224,7 @@ void ControlPWM(uint8_t mode)
             // Start fan PWM signal at 50%
             PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_FAN;
             TCD5.CCA = PWM_PERIOD;
-            TCD5.CCB = PWM_PERIOD >> 2;
+            TCD5.CCB = PWM_PERIOD;
             break;
 		case SCHEME_CURR:
         case SCHEME_VOLT:
@@ -283,17 +293,91 @@ float getVoltage(void)
 }
 
 // ----------------------------------------------------------------------------
+// Returns the temperature in degrees Celcius
+float getTemperature(void)
+{
+    // Calibrated for a TMP35 temperature sensor, which is an analog temperature
+    // sensor calibrated in degrees Celcius, with a range of -40°C to +125°C.
+    // 250mV @ 25°C
+    // 10°C ≤ T A ≤ 125°C, 10mV/°C
+    // Using similar ADC input range as the other analog inputs, mapping the
+    // temperature sensor through an op-amp with gain of about 2.47, 25C ~= 0.6175
+    // Max temp is 125C, so (1.25)(2.47) = 3.0875
+    // ADC  = (Vin)(4096)/Vref
+    //      = (3.0875)(4096)/3.3
+    //      = 3832
+    // ADC factor = 3832/3.0875 ~= Sea1241.0
+    // Xfer function
+    // t/C  = ADC / ADC factor / gain * 100
+    //      = 3832 / 1241.0 / 2.47 * 100
+    //      = 3832 / 1241.0 / 247
+    //      ~= 125
+    return (float) _tmpRawValue / 1241.0 / 247.0;
+}
+
+// ----------------------------------------------------------------------------
+// Return the fan RPM
+uint16_t getTachometer(void)
+{
+
+}
+
+// ----------------------------------------------------------------------------
 // Completes a fan monitoring pass, including 
 void ProcessMonitor(void)
 {
-    static uint8_t    _controlScheme  = SCHEME_NONE;
-    static uint8_t    _monitorMode    = MONITOR_NONE;
+    static uint8_t    monitorMode       = MONITOR_NONE;
+    static uint8_t	  delay				= 0;
 
     // Implement awesome fan control sheme state engine here!  Yeeeah!
-    // For now, just output the ADC reading for one of the input pins:    
+    // For now, just output the ADC reading for one of the input pins:
     ControlPWM(SCHEME_PWM);
-    TCD5.CCA = _fanRawVoltage;
+
+    uint16_t data = (uint16_t) getCurrent();
+    TCD5.CCA = data;
+    data = (uint16_t) getVoltage();
+    TCD5.CCA = data;
+    data = (uint16_t) getTemperature();
+    TCD5.CCA = data;
+
     TCD5.CCB = _fanRawCurrent;
+
+    TCD5.CCA = _tmpRawValue;
+
+
+    // Steps for monitoring a fan:
+    // On start-up:
+    // - Set voltage to max
+    // - Check for current usage
+    // 		if no current, check again
+    // - Check for tachometer data
+    // 		if no tachometer data, assume proportional temp + current monitor
+    // - If tachometer, adjust PWM output by 50%
+    // 		if tachometer decreases, assume 4-pin PWM control loop
+    // - If no tachometer change, assume 3-pin DC voltage control
+    // 		start reducing voltage by 0.5v steps and monitor tachometer to
+    // 		establish fan lower-bounds of speed
+    // While monitoring a fan, if the current load drops to 0, restart the
+    // monitoring startup process
+
+	// allow skips
+	if (_delay)
+	{
+		_delay--;
+		return;
+	}
+
+    switch (monitorMode)
+	{
+		case MONITOR_NONE:
+			ControlPWM(SCHEME_PWM);
+            monitorMode = MONITOR_STARTUP;
+			_delay = 2;
+			break;
+        case MONITOR_STARTUP:
+            if ()
+            break;
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -339,7 +423,7 @@ ISR(ADCA_CH0_vect)
             ADCA.CH0.MUXCTRL = ADC_CH_TEMP;
             break;
         case ADC_CH_TEMP:
-            _tempRawValue = ADCA.CH0.RES;
+            _tmpRawValue = ADCA.CH0.RES;
             _discardADC = 1;
             ADCA.CH0.MUXCTRL = ADC_CH_CURRENT;
             break;
@@ -348,6 +432,7 @@ ISR(ADCA_CH0_vect)
 
 // ----------------------------------------------------------------------------
 // Monitor timer interrupt handler
+/*
 ISR(TCC4_CCA_vect)
 {
     // Flag a monitoring cycle
@@ -355,4 +440,15 @@ ISR(TCC4_CCA_vect)
 
     // clear the interrupt flag when done
     TCC4.INTFLAGS = TC4_CCAIF_bm;
+}
+*/
+
+// ----------------------------------------------------------------------------
+// RTC overflow interrupt handler for the Monitor
+ISR(RTC_OVF_vect)
+{
+	// Flag a monitoring loopA
+	_monitorTick = 1;
+
+    TCC5.CTRLGSET = TC_CMD_RESTART_gc;
 }
