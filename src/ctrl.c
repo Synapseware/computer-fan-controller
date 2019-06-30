@@ -5,6 +5,7 @@
 volatile uint16_t   _fanRawCurrent  = 0;
 volatile uint16_t   _fanRawVoltage  = 0;
 volatile uint16_t   _tmpRawValue    = 0;
+volatile uint16_t   _tachRawValue   = 0;
 volatile uint8_t    _monitorTick    = 0;
 volatile uint8_t    _discardADC     = 1;
 
@@ -14,12 +15,10 @@ volatile uint8_t    _discardADC     = 1;
 void ConfigureCore(void)
 {
 	// Start the PLL and configure for 32MHz CPU clock
-	XMEGACLK_StartPLL(CLOCK_SRC_INT_RC2MHZ, 2000000, F_CPU);
-
-	// set the main clock source to the PLL
+	XMEGACLK_StartPLL(CLOCK_SRC_INT_RC32MHZ, 2000000, F_CPU);
 	XMEGACLK_SetCPUClockSource(CLOCK_SRC_PLL);
 
-	// Enable lov, med and high level interrupts in the PMIC
+	// Enable low, med, and high level interrupts in the PMIC
 	PMIC.CTRL = PMIC_LOLVLEN_bm | PMIC_MEDLVLEN_bm | PMIC_HILVLEN_bm;
 }
 
@@ -173,12 +172,15 @@ void ConfigureMonitor(void)
     TCC4.INTCTRLA = 0;
     TCC4.INTCTRLB = TC_CCAINTLVL_HI_gc;
     */
+
+    // Reset the RTC
+    RTC.CTRL = 0;
 	
 	// RTC for monitor
 	// 1.024kHz RTC clock scaled from 32.768kHz RC osc.
 	// 32768 / 1024 = 32
-	CLK.RTCCTRL = CLK_RTCSRC_RCOSC_gc;
-	RTC.PER = (32768/1024/32);
+	CLK.RTCCTRL = MONITOR_CLOCK;
+	RTC.PER = MONITOR_PERIOD;
 	RTC.INTCTRL = RTC_OVFINTLVL_HI_gc;
 	RTC.CTRL = RTC_OVF_vect;
 }
@@ -214,8 +216,8 @@ void ControlPWM(uint8_t mode)
 		case SCHEME_NONE:
 			// Disable all PWM output pins (high-z)
             PORTD.DIRCLR = PWM_OUT_VOLT | PWM_OUT_FAN;
-            TCD5.CCA = 0;
-            TCD5.CCB = 0;
+            TCD5.PWM_CTRL_VOLT = 0; 
+            TCD5.PWM_CTRL_PWM = 0;
 			break;
 		case SCHEME_PWM:
             // 4-pin PWM control:
@@ -223,20 +225,42 @@ void ControlPWM(uint8_t mode)
             // PWM output
             // Start fan PWM signal at 50%
             PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_FAN;
-            TCD5.CCA = PWM_PERIOD;
-            TCD5.CCB = PWM_PERIOD;
+            TCD5.PWM_CTRL_VOLT = PWM_PERIOD;
+            TCD5.PWM_CTRL_PWM = PWM_PERIOD;
             break;
-		case SCHEME_CURR:
-        case SCHEME_VOLT:
+		case SCHEME_POWER:
             // Current and voltage have the same PWM control scheme:
             // Voltage PWM is used to control fan speed, while
             // fan PWM output is disabled (high-Z)
             PORTD.DIRSET = PWM_OUT_VOLT;
             PORTD.DIRCLR = PWM_OUT_FAN;
-            TCD5.CCA = PWM_PERIOD;
-            TCD5.CCB = 0;
+            TCD5.PWM_CTRL_VOLT = PWM_PERIOD;
+            TCD5.PWM_CTRL_PWM = 0;
 			break;
     }
+}
+
+// ----------------------------------------------------------------------------
+// Sets the duty cycle on the PWM output signal for 4-pin PWM mode
+void setPwmOutput(uint8_t dutyCycle)
+{
+    // 
+    TCD5.PWM_CTRL_PWM = dutyCycle;
+}
+
+// ----------------------------------------------------------------------------
+// Sets the DC-DC voltage
+void setFanVoltage(float voltage)
+{
+    // Ideally this would be done via a PID controller.  But for now, we'll
+    // have to figure out some way to set a target voltage and then monitor
+    // it for accuracy.  Different loads on the buck converter will result
+    // in different final voltages, so no mapping exists between the PWM
+    // duty cycle and the target voltage.
+    // For simplicty, assume 12.0v = 100%, 6.0v = 50%
+    uint16_t dutyCycle = uint16_t (voltage / 12.0 * 100);
+
+    TCD5.PWM_CTRL_VOLT = dutyCycle;
 }
 
 // ----------------------------------------------------------------------------
@@ -319,7 +343,10 @@ float getTemperature(void)
 // Return the fan RPM
 uint16_t getTachometer(void)
 {
-
+    // The raw tachometer value is derived from a 1 second sample frequency.
+    // RPM's are estimated from this value. The tachometer output from the fan
+    // toggles twice per rotation, so we need to multiply the raw value by 60/2.
+    return _tachRawValue * 30;
 }
 
 // ----------------------------------------------------------------------------
@@ -328,22 +355,6 @@ void ProcessMonitor(void)
 {
     static uint8_t    monitorMode       = MONITOR_NONE;
     static uint8_t	  delay				= 0;
-
-    // Implement awesome fan control sheme state engine here!  Yeeeah!
-    // For now, just output the ADC reading for one of the input pins:
-    ControlPWM(SCHEME_PWM);
-
-    uint16_t data = (uint16_t) getCurrent();
-    TCD5.CCA = data;
-    data = (uint16_t) getVoltage();
-    TCD5.CCA = data;
-    data = (uint16_t) getTemperature();
-    TCD5.CCA = data;
-
-    TCD5.CCB = _fanRawCurrent;
-
-    TCD5.CCA = _tmpRawValue;
-
 
     // Steps for monitoring a fan:
     // On start-up:
@@ -367,15 +378,46 @@ void ProcessMonitor(void)
 		return;
 	}
 
+    float current = getCurrent();
+    float voltage = getVoltage();
+    float temperature = getTemperature();
+    uint16_t rpms = getTachometer();
+
     switch (monitorMode)
 	{
+        // The initial monitoring state
 		case MONITOR_NONE:
 			ControlPWM(SCHEME_PWM);
             monitorMode = MONITOR_STARTUP;
-			_delay = 2;
 			break;
+
+        // Begins the fan observation process
         case MONITOR_STARTUP:
-            if ()
+            // Check for RPM signal
+            if (rpms < 10)
+            {
+                // assume no RPM signal is present, switch mode to proportional
+                // control
+                ControlPWM(SCHEME_POWER);
+                monitorMode = MONITOR_POWER;
+            }
+
+            monitorMode = MONITOR_RPM_INIT;
+            break;
+
+        // Monitor the RPM signal and determine if 4-pin or 3-pin mode is required
+        case MONITOR_RPM_INIT:
+            break;
+
+        // RPM signal not found, so assume proportial temperature control
+        case MONITOR_POWER:
+            // Check current usage - if 0, assume startup mode
+            if (current < MIN_CURRENT)
+            {
+                // No power usage found, assume startup role
+                monitorMode = MONITOR_NONE;
+                break;
+            }
             break;
 	}
 }
@@ -450,5 +492,9 @@ ISR(RTC_OVF_vect)
 	// Flag a monitoring loopA
 	_monitorTick = 1;
 
+    // capture the raw counter value
+    _tachRawValue = TCC5.CNT;
+
+    // Restart the tachometer counter
     TCC5.CTRLGSET = TC_CMD_RESTART_gc;
 }

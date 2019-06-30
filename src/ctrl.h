@@ -26,40 +26,43 @@
 
 //--------------------------------------------------
 // Board constants
-#define ADC_CHANNEL     1
-#define ADC_SMOOTHING   4
+#define ADC_CHANNEL         1
+#define ADC_SMOOTHING       4
 
 // ADC monitors
-#define ADC_CH_CURRENT  ADC_CH_MUXPOS_PIN1_gc
-#define ADC_CH_VOLTAGE  ADC_CH_MUXPOS_PIN2_gc
-#define ADC_CH_TEMP     ADC_CH_MUXPOS_PIN3_gc
-
-#define ADC_OVER_LIMIT  975
-
+#define ADC_CH_CURRENT      ADC_CH_MUXPOS_PIN1_gc
+#define ADC_CH_VOLTAGE      ADC_CH_MUXPOS_PIN2_gc
+#define ADC_CH_TEMP         ADC_CH_MUXPOS_PIN3_gc
 
 // PWM outputs
-#define PWM_OUT_VOLT    PIN4_bm
-#define PWM_OUT_FAN     PIN5_bm
+#define PWM_OUT_VOLT        PIN4_bm
+#define PWM_OUT_FAN         PIN5_bm
+#define PWM_CTRL_VOLT       CCA
+#define PWM_CTRL_PWM        CCB
 
 // PWM controls
-#define PWM_PRESCALE    TC_CLKSEL_DIV8_gc
-//                      ((F_CPU / 8 / 25000)-1) = 159 (0-159 = 160)
-#define PWM_PERIOD      159
+#define PWM_PRESCALE        TC_CLKSEL_DIV8_gc
+//                          ((F_CPU / 8 / 25000)-1) = 159 (0-159 = 160)
+#define PWM_PERIOD          159
+
+// Use the 32.786kHz RC OSC divided by 1024 internally
+#define MONITOR_CLOCK       CLK_RTCSRC_RCOSC_gc
+#define MONITOR_PERIOD      (32768/1024/32)
 
 // Control schemes for PWM output states
-#define SCHEME_NONE     0
-#define SCHEME_PWM      1
-#define SCHEME_CURR     2
-#define SCHEME_VOLT     3
+#define SCHEME_NONE         0
+#define SCHEME_PWM          1
+#define SCHEME_POWER        2
 
 // Monitoring modes
 #define MONITOR_NONE        0
 #define MONITOR_STARTUP     1
-//#define MONITOR_AMPS    
-//#define MONITOR_VOLTS   2
-//#define MONITOR_ERROR   255
+#define MONITOR_POWER       2
+#define MONITOR_RPM_INIT    3
 
 
+// Minimum current is 10mA
+#define MIN_CURRENT         0.010
 
 
 
@@ -71,6 +74,8 @@ void ConfigureTachometer(void);
 void ConfigurePWM(void);
 void ConfigureMonitor(void);
 void ControlPWM(uint8_t mode);
+void setPwmOutput(uint16_t dutyCycle);
+void setFanVoltage(float voltage);
 float getCurrent(void);
 float getVoltage(void);
 float getTemperature(void);
