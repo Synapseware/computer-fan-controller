@@ -43,11 +43,13 @@
 // PWM controls
 #define PWM_PRESCALE        TC_CLKSEL_DIV8_gc
 //                          ((F_CPU / 8 / 25000)-1) = 159 (0-159 = 160)
-#define PWM_PERIOD          159
+#define PWM_PERIOD          160
 
 // Use the 32.786kHz RC OSC divided by 1024 internally
 #define MONITOR_CLOCK       CLK_RTCSRC_RCOSC_gc
+#define MONITOR_PRESCALE	RTC_PRESCALER_DIV1_gc
 #define MONITOR_PERIOD      (32768/1024/32)
+#define MONITOR_ISR_LVL		RTC_OVFINTLVL_HI_gc
 
 // Control schemes for PWM output states
 #define SCHEME_NONE         0

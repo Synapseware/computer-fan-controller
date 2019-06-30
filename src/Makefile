@@ -52,7 +52,8 @@ PORT = usb
 
 
 # MCU name
-MCU = atxmega8e5
+#MCU = atxmega8e5
+MCU = atxmega32e5
 
 # Fuse values
 FUSEBYTE1 = 0x00

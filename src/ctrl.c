@@ -134,7 +134,7 @@ void ConfigurePWM(void)
     TCD5.CTRLE = TC_CCAMODE_COMP_gc | TC_CCBMODE_COMP_gc;
 
     TCD5.CTRLA = PWM_PRESCALE;
-    TCD5.PER = PWM_PERIOD;
+    TCD5.PER = PWM_PERIOD-1;
 
     // Set the control scheme to none.
     ControlPWM(SCHEME_NONE);
@@ -181,8 +181,8 @@ void ConfigureMonitor(void)
 	// 32768 / 1024 = 32
 	CLK.RTCCTRL = MONITOR_CLOCK;
 	RTC.PER = MONITOR_PERIOD;
-	RTC.INTCTRL = RTC_OVFINTLVL_HI_gc;
-	RTC.CTRL = RTC_OVF_vect;
+	RTC.INTCTRL = MONITOR_ISR_LVL;
+	RTC.CTRL = MONITOR_PRESCALE;
 }
 
 // ----------------------------------------------------------------------------
@@ -225,8 +225,8 @@ void ControlPWM(uint8_t mode)
             // PWM output
             // Start fan PWM signal at 50%
             PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_FAN;
-            TCD5.PWM_CTRL_VOLT = PWM_PERIOD;
-            TCD5.PWM_CTRL_PWM = PWM_PERIOD;
+            TCD5.PWM_CTRL_VOLT = PWM_PERIOD-1;
+            TCD5.PWM_CTRL_PWM = PWM_PERIOD-1;
             break;
 		case SCHEME_POWER:
             // Current and voltage have the same PWM control scheme:
@@ -234,7 +234,7 @@ void ControlPWM(uint8_t mode)
             // fan PWM output is disabled (high-Z)
             PORTD.DIRSET = PWM_OUT_VOLT;
             PORTD.DIRCLR = PWM_OUT_FAN;
-            TCD5.PWM_CTRL_VOLT = PWM_PERIOD;
+            TCD5.PWM_CTRL_VOLT = PWM_PERIOD-1;
             TCD5.PWM_CTRL_PWM = 0;
 			break;
     }
@@ -242,7 +242,7 @@ void ControlPWM(uint8_t mode)
 
 // ----------------------------------------------------------------------------
 // Sets the duty cycle on the PWM output signal for 4-pin PWM mode
-void setPwmOutput(uint8_t dutyCycle)
+void setPwmOutput(uint16_t dutyCycle)
 {
     // 
     TCD5.PWM_CTRL_PWM = dutyCycle;
@@ -258,7 +258,17 @@ void setFanVoltage(float voltage)
     // in different final voltages, so no mapping exists between the PWM
     // duty cycle and the target voltage.
     // For simplicty, assume 12.0v = 100%, 6.0v = 50%
-    uint16_t dutyCycle = uint16_t (voltage / 12.0 * 100);
+    uint16_t dutyCycle = 0;
+    if (voltage > 1)
+    {
+        dutyCycle = (uint16_t) ((voltage / 12.0) * PWM_PERIOD)-1;
+    }
+
+    // capture max
+    if (dutyCycle > PWM_PERIOD-1)
+    {
+        dutyCycle = PWM_PERIOD-1;
+    }
 
     TCD5.PWM_CTRL_VOLT = dutyCycle;
 }
@@ -330,13 +340,13 @@ float getTemperature(void)
     // ADC  = (Vin)(4096)/Vref
     //      = (3.0875)(4096)/3.3
     //      = 3832
-    // ADC factor = 3832/3.0875 ~= Sea1241.0
+    // ADC factor = 3832/3.0875 ~= 1241.0
     // Xfer function
     // t/C  = ADC / ADC factor / gain * 100
     //      = 3832 / 1241.0 / 2.47 * 100
     //      = 3832 / 1241.0 / 247
     //      ~= 125
-    return (float) _tmpRawValue / 1241.0 / 247.0;
+    return (float) _tmpRawValue / 1241.0 / 247.0 * 10000;
 }
 
 // ----------------------------------------------------------------------------
@@ -347,6 +357,38 @@ uint16_t getTachometer(void)
     // RPM's are estimated from this value. The tachometer output from the fan
     // toggles twice per rotation, so we need to multiply the raw value by 60/2.
     return _tachRawValue * 30;
+}
+
+// ----------------------------------------------------------------------------
+// Maps a temperature value, in °C, to a duty cycle value for the DC-DC supply
+uint16_t mapTemperatureToPwm(float temperature)
+{
+    // 0-15 => 30%
+    // 15-80 => 30% - 100%
+    // 30%-100% => 48 - 160
+    // y = mx + b
+    // m = (y-y')/(x-x')
+    // m = (100-30)/(70-15)
+    // m ~= 1.3
+    // y = 1.3x + b
+    // 30 = (1.3)(15) + b
+    // b = 10.5
+    // y = 1.3x + 11
+
+    // min temperature = 15/C
+    // min fan speed = 30%
+    // max temperature = 70/C
+    // max fan speed = 100%
+
+    float percentDutyCycle = temperature * 1.3 + 11;
+    if (percentDutyCycle < 30.0)
+        return 0.30 * PWM_PERIOD;
+
+    if (percentDutyCycle > 100.0)
+        return PWM_PERIOD - 1;
+
+    // linear map
+    return PWM_PERIOD * percentDutyCycle / 100;
 }
 
 // ----------------------------------------------------------------------------
@@ -372,9 +414,9 @@ void ProcessMonitor(void)
     // monitoring startup process
 
 	// allow skips
-	if (_delay)
+	if (delay)
 	{
-		_delay--;
+		delay--;
 		return;
 	}
 
@@ -382,6 +424,10 @@ void ProcessMonitor(void)
     float voltage = getVoltage();
     float temperature = getTemperature();
     uint16_t rpms = getTachometer();
+
+    mapTemperatureToPwm(temperature);
+
+    return;
 
     switch (monitorMode)
 	{
@@ -426,6 +472,13 @@ void ProcessMonitor(void)
 int main(void)
 {
     init();
+
+    // wait for a monitor tick after init
+    while (_monitorTick)
+    {
+        ControlPWM(SCHEME_PWM);
+        break;
+    }
 
     // main loop
     while(1)
