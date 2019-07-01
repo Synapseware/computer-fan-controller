@@ -14,14 +14,15 @@ volatile uint8_t    _discardADC     = 1;
 // Configures the MCU flags
 void ConfigureCore(void)
 {
-	// Start the PLL and configure for 32MHz CPU clock
-	XMEGACLK_StartPLL(CLOCK_SRC_INT_RC32MHZ, 2000000, F_CPU);
-	XMEGACLK_SetCPUClockSource(CLOCK_SRC_PLL);
+    // start the internal 32MHz oscillator
+    XMEGACLK_StartInternalOscillator(CLOCK_SRC_INT_RC32MHZ);
+
+    // set CPU clock to 32MHz RC osc.
+    XMEGACLK_SetCPUClockSource(CLOCK_SRC_INT_RC32MHZ);
 
 	// Enable low, med, and high level interrupts in the PMIC
 	PMIC.CTRL = PMIC_LOLVLEN_bm | PMIC_MEDLVLEN_bm | PMIC_HILVLEN_bm;
 }
-
 
 // ----------------------------------------------------------------------------
 // Initializes the ADC to read on 2 channels
@@ -41,7 +42,7 @@ void ConfigureADC(void)
 
     // See "Alternate Pin Functions" in the datasheet around page 59
 
-    PORTA.DIRCLR = PIN1_bm | PIN2_bm | PIN3_bm;
+    PORTA.DIRCLR = PIN0_bm | PIN1_bm | PIN2_bm | PIN3_bm;
 
     // disable the ADC
     ADCA.CTRLA = 0;
@@ -133,7 +134,7 @@ void ConfigurePWM(void)
     // Enable capture/compare mode output
     TCD5.CTRLE = TC_CCAMODE_COMP_gc | TC_CCBMODE_COMP_gc;
 
-    TCD5.CTRLA = PWM_PRESCALE;
+    TCD5.CTRLA = PWM_CLK_SEL;
     TCD5.PER = PWM_PERIOD-1;
 
     // Set the control scheme to none.
@@ -144,65 +145,37 @@ void ConfigurePWM(void)
 // Initializes the hardware monitor, which uses the RTC
 void ConfigureMonitor(void)
 {
-    /*
-    // TCxx is setup to prescale by ....
-    // second event loops.
-    // The ISR is handled by assembly language for minimum overhead.  The ISR
-    // toggles a global variable, _monitorTick, which when set to 1 initiates
-    // a control loop.
-    // Configure the prescaler (32MHz / 1024 / 31250 = 1) and set the
-    // compare A value to 1 for 1 second interrupts
-    TCC4.CTRLA = TC_CLKSEL_DIV1024_gc;
-    TCC4.PER = 31250-1;
-    TCC4.CCA = 1;
+    // enable the 32kHz RC clock
+    XMEGACLK_StartInternalOscillator(CLOCK_SRC_INT_RC32KHZ);
+    CLK.RTCCTRL = CLK_RTCSRC_RCOSC_gc | CLK_RTCEN_bm;
+    while((RTC.STATUS & RTC_SYNCBUSY_bm));
 
-    // Normal mode, 16 bit
-    TCC4.CTRLB = TC_BYTEM_NORMAL_gc | TC_WGMODE_NORMAL_gc;
-
-    // Normal
-    TCC4.CTRLC = 0;
-
-    // No event system connections
-    TCC4.CTRLD = 0;
-
-    // No compare/capture
-    TCC4.CTRLE = 0;
-
-    // Enable high priority interrupt on CCA
-    TCC4.INTCTRLA = 0;
-    TCC4.INTCTRLB = TC_CCAINTLVL_HI_gc;
-    */
-
-    // Reset the RTC
-    RTC.CTRL = 0;
-	
-	// RTC for monitor
-	// 1.024kHz RTC clock scaled from 32.768kHz RC osc.
-	// 32768 / 1024 = 32
-	CLK.RTCCTRL = MONITOR_CLOCK;
-	RTC.PER = MONITOR_PERIOD;
-	RTC.INTCTRL = MONITOR_ISR_LVL;
-	RTC.CTRL = MONITOR_PRESCALE;
+    RTC_Initialize(1024, 0, 20, RTC_PRESCALER_DIV1_gc);
+    RTC_SetIntLevels(RTC_OVFINTLVL_HI_gc, RTC_COMPINTLVL_LO_gc);
 }
 
 // ----------------------------------------------------------------------------
 // initialize all the hardware on the system
 void init(void)
 {
+    cli();
+
 	// configure CPU core
 	ConfigureCore();
+
+    // Initialize PWM drivers
+    ConfigurePWM();
 
     // configures the ADC module
     ConfigureADC();
 
     // Configure tachometer capturing timer
-    ConfigureTachometer();
-
-    // Initialize PWM drivers
-    ConfigurePWM();
+    //ConfigureTachometer();
 
 	// Initialize fan monitoring
     ConfigureMonitor();
+
+    sei();
 }
 
 // ----------------------------------------------------------------------------
@@ -215,16 +188,17 @@ void ControlPWM(uint8_t mode)
 	{
 		case SCHEME_NONE:
 			// Disable all PWM output pins (high-z)
-            PORTD.DIRCLR = PWM_OUT_VOLT | PWM_OUT_FAN;
-            TCD5.PWM_CTRL_VOLT = 0; 
-            TCD5.PWM_CTRL_PWM = 0;
+            PORTD.DIRCLR = PWM_OUT_VOLT | PWM_OUT_PWM;
+            TCD5.PWM_CTRL_VOLT = 0;        // PIN4
+            TCD5.PWM_CTRL_PWM = 0;         // PIN5
 			break;
 		case SCHEME_PWM:
             // 4-pin PWM control:
             // Max DC-DC voltage
             // PWM output
             // Start fan PWM signal at 50%
-            PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_FAN;
+            PORTD.DIRCLR = PWM_OUT_VOLT;    // PIN4
+            PORTD.DIRSET = PWM_OUT_PWM;     // PIN5
             TCD5.PWM_CTRL_VOLT = PWM_PERIOD-1;
             TCD5.PWM_CTRL_PWM = PWM_PERIOD-1;
             break;
@@ -232,8 +206,8 @@ void ControlPWM(uint8_t mode)
             // Current and voltage have the same PWM control scheme:
             // Voltage PWM is used to control fan speed, while
             // fan PWM output is disabled (high-Z)
-            PORTD.DIRSET = PWM_OUT_VOLT;
-            PORTD.DIRCLR = PWM_OUT_FAN;
+            PORTD.DIRSET = PWM_OUT_VOLT;    // PIN4
+            PORTD.DIRCLR = PWM_OUT_PWM;     // PIN5
             TCD5.PWM_CTRL_VOLT = PWM_PERIOD-1;
             TCD5.PWM_CTRL_PWM = 0;
 			break;
@@ -425,7 +399,7 @@ void ProcessMonitor(void)
     float temperature = getTemperature();
     uint16_t rpms = getTachometer();
 
-    mapTemperatureToPwm(temperature);
+    mapTemperatureToPwm(58.0);
 
     return;
 
@@ -471,7 +445,40 @@ void ProcessMonitor(void)
 // ----------------------------------------------------------------------------
 int main(void)
 {
+    PORTC.DIRSET = PIN2_bm;
+    PORTC.OUTCLR = PIN2_bm;
+    PORTD.DIRSET = PWM_OUT_PWM;
+
     init();
+
+    /*
+    while(1)
+    {
+        PORTD.OUTTGL = PWM_OUT_PWM;
+    }
+    */
+
+    ControlPWM(SCHEME_PWM);
+
+    PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_PWM;
+
+    TCD5.PWM_CTRL_VOLT = PWM_PERIOD * 0.1;
+    TCD5.PWM_CTRL_PWM = PWM_PERIOD * 0.7;
+
+    // wait here
+    while(1)
+    {
+        if (!_monitorTick)
+            continue;
+
+        // looks like it's mapping 0.17 to 1.31 volts
+        float temperature = getTemperature();
+        uint16_t dutyCycle = mapTemperatureToPwm(temperature);
+        setPwmOutput(dutyCycle);
+    }
+
+    //uint16_t dutyCycle = mapTemperatureToPwm(58.0);
+    setPwmOutput(100);
 
     // wait for a monitor tick after init
     while (_monitorTick)
@@ -526,28 +533,23 @@ ISR(ADCA_CH0_vect)
 }
 
 // ----------------------------------------------------------------------------
-// Monitor timer interrupt handler
-/*
-ISR(TCC4_CCA_vect)
-{
-    // Flag a monitoring cycle
-    _monitorTick = 1;
-
-    // clear the interrupt flag when done
-    TCC4.INTFLAGS = TC4_CCAIF_bm;
-}
-*/
-
-// ----------------------------------------------------------------------------
 // RTC overflow interrupt handler for the Monitor
 ISR(RTC_OVF_vect)
 {
 	// Flag a monitoring loopA
 	_monitorTick = 1;
 
+    //PORTD.OUTTGL = PWM_OUT_PWM;
+    PORTC.OUTSET = PIN2_bm;
+
     // capture the raw counter value
     _tachRawValue = TCC5.CNT;
 
     // Restart the tachometer counter
     TCC5.CTRLGSET = TC_CMD_RESTART_gc;
+}
+
+ISR(RTC_COMP_vect)
+{
+    PORTC.OUTCLR = PIN2_bm;
 }

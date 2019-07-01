@@ -22,6 +22,7 @@
 #include "board.h"
 #include "drivers/ADC.h"
 #include "drivers/ClockManagement.h"
+#include "drivers/rtc_driver.h"
 
 
 //--------------------------------------------------
@@ -36,12 +37,12 @@
 
 // PWM outputs
 #define PWM_OUT_VOLT        PIN4_bm
-#define PWM_OUT_FAN         PIN5_bm
+#define PWM_OUT_PWM         PIN5_bm
 #define PWM_CTRL_VOLT       CCA
 #define PWM_CTRL_PWM        CCB
 
 // PWM controls
-#define PWM_PRESCALE        TC_CLKSEL_DIV8_gc
+#define PWM_CLK_SEL         TC_CLKSEL_DIV8_gc
 //                          ((F_CPU / 8 / 25000)-1) = 159 (0-159 = 160)
 #define PWM_PERIOD          160
 

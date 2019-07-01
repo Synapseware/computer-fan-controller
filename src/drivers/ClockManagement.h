@@ -43,7 +43,6 @@
                 DFLL_REF_INT_USBSOF    = 2, /**< Reference clock sourced from the USB Start Of Frame packets. */
             };
 
-
             /** Write a value to a location protected by the XMEGA CCP protection mechanism. This function uses inline assembly to ensure that
              *  the protected address is written to within four clock cycles of the CCP key being written.
              *
@@ -61,6 +60,82 @@
                     : /* Input operands: */ "m" (RAMPZ), "e" (Address), "m" (CCP), "r" (CCP_IOREG_gc), "r" (Value)
                     : /* Clobbered registers: */ "r30", "r31"
                 );
+            }
+
+            /** Starts the external oscillator of the XMEGA microcontroller, with the given options. This routine blocks until
+             *  the oscillator is ready for use.
+             *
+             *  \param[in] FreqRange  Frequency range of the external oscillator, a value from \ref XMEGA_Extern_OSC_ClockFrequency_t.
+             *  \param[in] Startup    Startup time of the external oscillator, a value from \ref XMEGA_Extern_OSC_ClockStartup_t.
+             *
+             *  \return Boolean \c true if the external oscillator was successfully started, \c false if invalid parameters specified.
+             */
+            static inline bool XMEGACLK_StartExternalOscillator(const uint8_t FreqRange, const uint8_t Startup)
+            {
+                OSC.XOSCCTRL  = (FreqRange | ((Startup == EXOSC_START_32KCLK) ? OSC_X32KLPM_bm : 0) | Startup);
+                OSC.CTRL     |= OSC_XOSCEN_bm;
+
+                while (!(OSC.STATUS & OSC_XOSCRDY_bm));
+                return true;
+            }
+
+            /** Stops the external oscillator of the XMEGA microcontroller. */
+            static inline void XMEGACLK_StopExternalOscillator(void)
+            {
+                // disable the crystal oscillator
+                OSC.CTRL     &= ~OSC_XOSCEN_bm;
+            }
+
+            /** Starts the given internal oscillator of the XMEGA microcontroller, with the given options. This routine blocks until
+             *  the oscillator is ready for use.
+             *
+             *  \param[in] Source  Internal oscillator to start, a value from \ref XMEGA_System_ClockSource_t.
+             *
+             *  \return Boolean \c true if the internal oscillator was successfully started, \c false if invalid parameters specified.
+             */
+            static inline bool XMEGACLK_StartInternalOscillator(const uint8_t Source)
+            {
+                switch (Source)
+                {
+                    case CLOCK_SRC_INT_RC2MHZ:
+                        OSC.CTRL |= OSC_RC2MEN_bm;
+                        while (!(OSC.STATUS & OSC_RC2MRDY_bm));
+                        return true;
+                    case CLOCK_SRC_INT_RC32MHZ:
+                        OSC.CTRL |= OSC_RC32MEN_bm;
+                        while (!(OSC.STATUS & OSC_RC32MRDY_bm));
+                        return true;
+                    case CLOCK_SRC_INT_RC32KHZ:
+                        OSC.CTRL |= OSC_RC32KEN_bm;
+                        while (!(OSC.STATUS & OSC_RC32KRDY_bm));
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            /** Stops the given internal oscillator of the XMEGA microcontroller.
+             *
+             *  \param[in] Source  Internal oscillator to stop, a value from \ref XMEGA_System_ClockSource_t.
+             *
+             *  \return Boolean \c true if the internal oscillator was successfully stopped, \c false if invalid parameters specified.
+             */
+            static inline bool XMEGACLK_StopInternalOscillator(const uint8_t Source)
+            {
+                switch (Source)
+                {
+                    case CLOCK_SRC_INT_RC2MHZ:
+                        OSC.CTRL &= ~OSC_RC2MEN_bm;
+                        return true;
+                    case CLOCK_SRC_INT_RC32MHZ:
+                        OSC.CTRL &= ~OSC_RC32MEN_bm;
+                        return true;
+                    case CLOCK_SRC_INT_RC32KHZ:
+                        OSC.CTRL &= ~OSC_RC32KEN_bm;
+                        return true;
+                    default:
+                        return false;
+                }
             }
 
             /** Starts the PLL of the XMEGA microcontroller, with the given options. This routine blocks until the PLL is ready for use.
@@ -106,6 +181,12 @@
                 return true;
             }
 
+            /** Stops the PLL of the XMEGA microcontroller. */
+            static inline void XMEGACLK_StopPLL(void)
+            {
+                
+                OSC.CTRL &= ~OSC_PLLEN_bm;
+            }
 
             /** Sets the clock source for the main microcontroller core. The given clock source should be configured
              *  and ready for use before this function is called.
