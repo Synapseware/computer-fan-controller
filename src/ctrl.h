@@ -79,7 +79,7 @@ void ConfigureMonitor(void);
 void ControlPWM(uint8_t mode);
 void setPwmOutput(uint16_t dutyCycle);
 void setFanVoltage(float voltage);
-float getCurrent(void);
+uint8_t isFanConnected(void);
 float getVoltage(void);
 float getTemperature(void);
 uint16_t getTachometer(void);

@@ -7,7 +7,6 @@ volatile uint16_t   _fanRawVoltage  = 0;
 volatile uint16_t   _tmpRawValue    = 0;
 volatile uint16_t   _tachRawValue   = 0;
 volatile uint8_t    _monitorTick    = 0;
-volatile uint8_t    _discardADC     = 1;
 
 
 // -----------------------------------------------------------------------------
@@ -248,29 +247,12 @@ void setFanVoltage(float voltage)
 }
 
 // ----------------------------------------------------------------------------
-// Returns the fan current in amps
-float getCurrent(void)
+// Returns a 0 if no fan is detected
+uint8_t isFanConnected(void)
 {
-    // The max voltage from the resistor divider for the DC-DC power supply
-    // is chosen to be close to 3.3v, which is the ADC's reference voltage.
-    // That's why the getVoltage() and getCurrent() functions have similar
-    // values for the ADC factors.
-    // The transfer function from the OpAmp output is:
-    // Vin/Rin = (Vout-Vin)/Rf ... or ...
-    // Av = 1 + (Rf/Rin)
-    // At 0.255V, the load resistor is at maximum power load.  At Pmax,
-    // the current is as follows:
-    // Imax = sqrt(P/R) = sqrt(0.5/.13) ~= 1.96
-    // Vmax = sqrt(P/R)(R) = sqrt(0.5/.13)(.13) ~= 255mV
-    // Vout = (Vmax)(Av) = (0.255)(12.4) ~= 3.161
-    // ADC = (Vin)(4096)/Vref => (3.161)(4096)/3.3 ~= 3923
-    // ADC factor = 3923/1.96 ~= 2001.5
-    // ADC xfer function:
-    //       = 3923 / 2001.5
-    //       = 1.96
- 
-    // Map the ADC sample to the fans' current
-    return (float) _fanRawCurrent / 2001.5;
+    return _fanRawCurrent > 250
+        ? 1
+        : 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -394,7 +376,6 @@ void ProcessMonitor(void)
 		return;
 	}
 
-    float current = getCurrent();
     float voltage = getVoltage();
     float temperature = getTemperature();
     uint16_t rpms = getTachometer();
@@ -432,7 +413,7 @@ void ProcessMonitor(void)
         // RPM signal not found, so assume proportial temperature control
         case MONITOR_POWER:
             // Check current usage - if 0, assume startup mode
-            if (current < MIN_CURRENT)
+            if (!isFanConnected())
             {
                 // No power usage found, assume startup role
                 monitorMode = MONITOR_NONE;
@@ -448,6 +429,8 @@ int main(void)
     PORTC.DIRSET = PIN2_bm;
     PORTC.OUTCLR = PIN2_bm;
     PORTD.DIRSET = PWM_OUT_PWM;
+    PORTD.DIRSET = PIN7_bm;         // no-fan LED
+    PORTD.OUTSET = PIN7_bm;         // turn on the LED
 
     init();
 
@@ -462,19 +445,31 @@ int main(void)
 
     PORTD.DIRSET = PWM_OUT_VOLT | PWM_OUT_PWM;
 
-    TCD5.PWM_CTRL_VOLT = PWM_PERIOD * 0.1;
-    TCD5.PWM_CTRL_PWM = PWM_PERIOD * 0.7;
+    TCD5.PWM_CTRL_VOLT = PWM_PERIOD * 0.7;
+    TCD5.PWM_CTRL_PWM = PWM_PERIOD * 0.3;
 
     // wait here
     while(1)
     {
         if (!_monitorTick)
             continue;
+        _monitorTick = 0;
 
         // looks like it's mapping 0.17 to 1.31 volts
         float temperature = getTemperature();
         uint16_t dutyCycle = mapTemperatureToPwm(temperature);
         setPwmOutput(dutyCycle);
+
+        if (isFanConnected())
+        {
+            // turn off the fan error LED
+            PORTD.OUTCLR = PIN7_bm;
+        }
+        else
+        {
+            // turn on the fan error LED
+            PORTD.OUTSET = PIN7_bm;
+        }
     }
 
     //uint16_t dutyCycle = mapTemperatureToPwm(58.0);
@@ -506,30 +501,33 @@ int main(void)
 // after sampling, and discards bad results
 ISR(ADCA_CH0_vect)
 {
-    if (_discardADC)
+    static uint8_t monitoring = ADC_CH_CURRENT;
+    static uint8_t discard = 1;
+
+    if (discard)
     {
-        _discardADC = 0;
+        discard = 0;
         return;
     }
 
-    switch (ADCA.CH0.MUXCTRL)
+    switch (monitoring)
     {
         case ADC_CH_CURRENT:
             _fanRawCurrent = ADCA.CH0.RES;
-            _discardADC = 1;
-            ADCA.CH0.MUXCTRL = ADC_CH_VOLTAGE;
+            monitoring = ADC_CH_VOLTAGE;
             break;
         case ADC_CH_VOLTAGE:
             _fanRawVoltage = ADCA.CH0.RES;
-            _discardADC = 1;
-            ADCA.CH0.MUXCTRL = ADC_CH_TEMP;
+            monitoring = ADC_CH_TEMP;
             break;
         case ADC_CH_TEMP:
             _tmpRawValue = ADCA.CH0.RES;
-            _discardADC = 1;
-            ADCA.CH0.MUXCTRL = ADC_CH_CURRENT;
+            monitoring = ADC_CH_CURRENT;
             break;
     }
+
+    ADCA.CH0.MUXCTRL = monitoring;
+    discard = 1;
 }
 
 // ----------------------------------------------------------------------------
